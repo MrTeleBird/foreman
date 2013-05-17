@@ -117,6 +117,10 @@ module ProxyAPI
       parse(post({:nodes => hosts}, "run"))
     end
 
+    def runSingle hosts,c2d
+      parse(post({:nodes => hosts, :tag => c2d}, "runSingle"))
+    end
+
   end
   class Puppetca < Resource
     def initialize args

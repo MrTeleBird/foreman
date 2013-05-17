@@ -39,6 +39,8 @@ Foreman::Application.routes.draw do
         post 'update_multiple_environment'
         get 'multiple_puppetrun'
         post 'update_multiple_puppetrun'
+        get 'multiple_puppetrun_oneClass_deploy'
+        post 'update_multiple_puppetrun_oneClass_deploy'
         get 'multiple_destroy'
         post 'submit_multiple_destroy'
         get 'multiple_build'
@@ -303,7 +305,7 @@ Foreman::Application.routes.draw do
       end
       collection do
 	      get 'auto_complete_search'
-        get 'clear', :action => 'select'
+        get 'clear'
         get  'mismatches'
         post 'import_mismatches'
       end
@@ -323,7 +325,7 @@ Foreman::Application.routes.draw do
       end
       collection do
 	      get 'auto_complete_search'
-        get 'clear', :action => 'select'
+        get 'clear'
         get  'mismatches'
         post 'import_mismatches'
       end

@@ -18,11 +18,14 @@ class HostsController < ApplicationController
     :select_multiple_hostgroup, :select_multiple_environment, :multiple_parameters, :multiple_destroy,
     :multiple_enable, :multiple_disable, :submit_multiple_disable, :submit_multiple_enable, :update_multiple_hostgroup,
     :update_multiple_environment, :submit_multiple_build, :submit_multiple_destroy, :update_multiple_puppetrun,
-    :multiple_puppetrun]
+    :multiple_puppetrun, :update_multiple_puppetrun_oneClass_deploy, :multiple_puppetrun_oneClass_deploy]
   before_filter :find_by_name, :only => %w[show edit update destroy puppetrun setBuild cancelBuild
     storeconfig_klasses clone pxe_config toggle_manage power console]
 
   helper :hosts, :reports
+
+  # Class variable for "Deploy Single Class" feature 
+  @@myDeploy = ''
 
   def index (title = nil)
     begin
@@ -33,6 +36,10 @@ class HostsController < ApplicationController
     end
     respond_to do |format|
       format.html do
+        @myDeploy_tmp = params[:search]
+        unless @myDeploy_tmp.nil?
+               @@myDeploy = @myDeploy_tmp[/=(.*)/, 1]  
+        end
         @hosts = search.paginate :page => params[:page], :include => included_associations
         # SQL optimizations queries
         @last_reports = Report.maximum(:id, :group => :host_id, :conditions => {:host_id => @hosts})
@@ -378,6 +385,21 @@ class HostsController < ApplicationController
     end
     redirect_back_or_to hosts_path
   end
+
+  def multiple_puppetrun_oneClass_deploy
+    deny_access unless Setting[:puppetrun]
+  end
+
+  def update_multiple_puppetrun_oneClass_deploy
+    return deny_access unless Setting[:puppetrun]
+    if @hosts.map { |host| host.puppetrun_oneClass!(@@myDeploy) }.uniq == [true]
+      notice "Successfully executed, check reports and/or log files for more details"
+    else
+      error "Some or all hosts execution failed, Please check log files for more information"
+    end
+    redirect_back_or_to hosts_path
+  end
+
 
   def errors
     merge_search_filter("last_report > \"#{Setting[:puppet_interval] + 5} minutes ago\" and (status.failed > 0 or status.failed_restarts > 0)")
