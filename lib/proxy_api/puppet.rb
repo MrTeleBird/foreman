@@ -1,5 +1,5 @@
 module ProxyAPI
-  class Puppet < Resource
+  class Puppet < ProxyAPI::Resource
     def initialize args
       @url  = args[:url] + "/puppet"
       super args
@@ -24,5 +24,10 @@ module ProxyAPI
     def run hosts
       parse(post({:nodes => hosts}, "run"))
     end
+
+    def runSingle hosts,c2d
+      parse(post({:nodes => hosts, :tag => c2d}, "runSingle"))
+    end 
+
   end
 end

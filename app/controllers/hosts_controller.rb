@@ -1,7 +1,3 @@
-require 'foreman/controller/host_details'
-require 'foreman/controller/smart_proxy_auth'
-require 'foreman/controller/taxonomy_multiple'
-
 class HostsController < ApplicationController
   include Foreman::Controller::HostDetails
   include Foreman::Controller::AutoCompleteSearch
@@ -10,7 +6,7 @@ class HostsController < ApplicationController
 
   PUPPETMASTER_ACTIONS=[ :externalNodes, :lookup ]
   SEARCHABLE_ACTIONS= %w[index active errors out_of_sync pending disabled ]
-  AJAX_REQUESTS=%w{compute_resource_selected hostgroup_or_environment_selected current_parameters puppetclass_parameters}
+  AJAX_REQUESTS=%w{compute_resource_selected hostgroup_or_environment_selected current_parameters puppetclass_parameters process_hostgroup process_taxonomy}
   BOOT_DEVICES={ :disk => N_('Disk'), :cdrom => N_('CDROM'), :pxe => N_('PXE'), :bios => N_('BIOS') }
 
   add_puppetmaster_filters PUPPETMASTER_ACTIONS
@@ -19,12 +15,15 @@ class HostsController < ApplicationController
     :select_multiple_hostgroup, :select_multiple_environment, :multiple_parameters, :multiple_destroy,
     :multiple_enable, :multiple_disable, :submit_multiple_disable, :submit_multiple_enable, :update_multiple_hostgroup,
     :update_multiple_environment, :submit_multiple_build, :submit_multiple_destroy, :update_multiple_puppetrun,
-    :multiple_puppetrun]
+    :multiple_puppetrun, :update_multiple_puppetrun_oneClass_deploy, :multiple_puppetrun_oneClass_deploy] 
   before_filter :find_by_name, :only => %w[show edit update destroy puppetrun setBuild cancelBuild
     storeconfig_klasses clone pxe_config toggle_manage power console bmc ipmi_boot]
-  before_filter :taxonomy_scope, :only => [:hostgroup_or_environment_selected, :process_hostgroup]
+  before_filter :taxonomy_scope, :only => [:new, :edit] + AJAX_REQUESTS
   before_filter :set_host_type, :only => [:update]
   helper :hosts, :reports
+
+# Class variable for "Deploy Single Class" feature  
+  @@myDeploy = ''
 
   def index (title = nil)
     begin
@@ -35,6 +34,10 @@ class HostsController < ApplicationController
     end
     respond_to do |format|
       format.html do
+        @myDeploy_tmp = params[:search] 
+        unless @myDeploy_tmp.nil?
+               @@myDeploy = @myDeploy_tmp[/=(.*)/, 1]
+        end
         @hosts = search.includes(included_associations).paginate(:page => params[:page])
         # SQL optimizations queries
         @last_reports = Report.where(:host_id => @hosts.map(&:id)).group(:host_id).maximum(:id)
@@ -104,9 +107,17 @@ class HostsController < ApplicationController
   def update
     forward_url_options
     Taxonomy.no_taxonomy_scope do
+      # remove from hash :root_pass and bmc :password if blank?
+      params[:host].except!(:root_pass) if params[:host][:root_pass].blank?
+      if @host.type == "Host::Managed" && params[:host][:interfaces_attributes]
+        params[:host][:interfaces_attributes].each do |k, v|
+          params[:host][:interfaces_attributes]["#{k}"].except!(:password) if params[:host][:interfaces_attributes]["#{k}"][:password].blank?
+        end
+      end
       if @host.update_attributes(params[:host])
         process_success :success_redirect => host_path(@host), :redirect_xhr => request.xhr?
       else
+        taxonomy_scope
         load_vars_for_ajax
         offer_to_overwrite_conflicts
         process_error
@@ -124,8 +135,10 @@ class HostsController < ApplicationController
 
   # form AJAX methods
   def compute_resource_selected
-    compute = ComputeResource.find(params[:compute_resource_id]) if params[:compute_resource_id].to_i > 0
-    render :partial => "compute", :locals => {:compute_resource => compute} if compute
+    return not_found unless (params[:host] && (id=params[:host][:compute_resource_id]))
+    Taxonomy.as_taxonomy @organization, @location do
+      render :partial => "compute", :locals => {:compute_resource => ComputeResource.find_by_id(id)}
+    end
   end
 
   def hostgroup_or_environment_selected
@@ -139,11 +152,15 @@ class HostsController < ApplicationController
   end
 
   def current_parameters
-    render :partial => "common_parameters/inherited_parameters", :locals => {:inherited_parameters => refresh_host.host_inherited_params(true)}
+    Taxonomy.as_taxonomy @organization, @location do
+      render :partial => "common_parameters/inherited_parameters", :locals => {:inherited_parameters => refresh_host.host_inherited_params(true)}
+    end
   end
 
   def puppetclass_parameters
-    render :partial => "puppetclasses/classes_parameters", :locals => { :obj => refresh_host}
+    Taxonomy.as_taxonomy @organization, @location do
+      render :partial => "puppetclasses/classes_parameters", :locals => { :obj => refresh_host}
+    end
   end
 
   #returns a yaml file ready to use for puppet external nodes script
@@ -206,12 +223,13 @@ class HostsController < ApplicationController
 
   def bmc
     render :partial => 'bmc', :locals => { :host => @host }
-  rescue => e
-    #TODO: hack
-    error = e.try(:original_exception).try(:response) || e.to_s
-    logger.warn "failed to fetch bmc information: #{error}"
-    logger.debug e.backtrace
-    render :text => "Failure: #{error}"
+  rescue ActionView::Template::Error => exception
+    origin = exception.try(:original_exception)
+    message = (origin || exception).message
+    logger.warn "Failed to fetch bmc information: #{message}"
+    logger.debug "Original exception backtrace:\n" + origin.backtrace.join("\n") if origin.present?
+    logger.debug "Causing backtrace:\n" + exception.backtrace.join("\n")
+    render :text => "Failure: #{message}"
   end
 
   def ipmi_boot
@@ -398,6 +416,22 @@ class HostsController < ApplicationController
     redirect_back_or_to hosts_path
   end
 
+  def multiple_puppetrun_oneClass_deploy
+    deny_access unless Setting[:puppetrun]
+  end
+
+  def update_multiple_puppetrun_oneClass_deploy
+    return deny_access unless Setting[:puppetrun]
+    if @hosts.map { |host| host.puppetrun_oneClass!(@@myDeploy) }.uniq == [true]
+      notice _("Deploy started, check reports and/or log files for more details")
+    else
+      error _("Some or all hosts execution failed, Please check log files for more information")
+    end
+    redirect_back_or_to hosts_path
+  end
+
+
+
   def errors
     merge_search_filter("last_report > \"#{Setting[:puppet_interval] + 5} minutes ago\" and (status.failed > 0 or status.failed_restarts > 0)")
     index _("Hosts with errors")
@@ -427,34 +461,35 @@ class HostsController < ApplicationController
     @hostgroup = Hostgroup.find(params[:host][:hostgroup_id]) if params[:host][:hostgroup_id].to_i > 0
     return head(:not_found) unless @hostgroup
 
-    organization = Organization.find(params[:host][:organization_id]) unless params[:host][:organization_id].empty?
-    location = Location.find(params[:host][:location_id]) unless params[:host][:location_id].empty?
-
     @architecture    = @hostgroup.architecture
     @operatingsystem = @hostgroup.operatingsystem
     @environment     = @hostgroup.environment
     @domain          = @hostgroup.domain
     @subnet          = @hostgroup.subnet
 
-    @host = Host.new(params[:host])
-    @host.set_hostgroup_defaults
-
-    Taxonomy.as_taxonomy organization, location do
-      render :partial => "form"
+    @host = if params[:host][:id]
+      host = Host::Base.find(params[:host][:id])
+      host = host.becomes Host::Managed
+      host.attributes = params[:host]
+      host
+    else
+      Host.new(params[:host])
     end
+    @host.set_hostgroup_defaults
+    render :partial => "form"
 
   end
 
   def process_taxonomy
-    location = organization = nil
-    organization = Organization.find(params[:host][:organization_id]) unless params[:host][:organization_id].empty?
-    location = Location.find(params[:host][:location_id]) unless params[:host][:location_id].empty?
-    return head(:not_found) unless location || organization
-
+    return head(:not_found) unless @location || @organization
     @host = Host.new(params[:host])
-    Taxonomy.as_taxonomy organization, location do
-      render :partial => "form"
+    # revert compute resource to "Bare Metal" (nil) if selected
+    # compute resource is not included taxonomy
+    Taxonomy.as_taxonomy @organization , @location do
+      # if compute_resource_id is not in our scope, reset it to nil.
+      @host.compute_resource_id = nil unless ComputeResource.exists?(@host.compute_resource_id)
     end
+    render :partial => 'form'
   end
 
 
@@ -499,21 +534,44 @@ class HostsController < ApplicationController
   end
 
   def taxonomy_scope
-    @organization = params[:organization_id].blank? ? nil : Organization.find(Array.wrap(params[:organization_id]))
-    @location     = params[:location_id].blank? ? nil : Location.find(Array.wrap(params[:location_id]))
+    if params[:host]
+      @organization = Organization.find_by_id(params[:host][:organization_id])
+      @location = Location.find_by_id(params[:host][:location_id])
+    end
+
+    if @host
+      @organization ||= @host.organization
+      @location     ||= @host.location
+    end
+
+    if SETTINGS[:organizations_enabled]
+      @organization ||= Organization.current
+      @organization ||= Organization.my_organizations.first
+    end
+    if SETTINGS[:locations_enabled]
+      @location ||= Location.current
+      @location ||= Location.my_locations.first
+    end
   end
 
   def find_by_name
-    # find host first, if we fail, do nothing
-    params[:id].downcase! if params[:id].present?
-    super
-    return false unless @host
-    deny_access and return unless User.current.admin? or Host.my_hosts.include?(@host)
+    not_found and return false if (id = params[:id]).blank?
+    # determine if we are searching for a numerical id or plain name
+
+    if id =~ /^\d+$/
+      @host = Host::Base.my_hosts.find_by_id id.to_i
+    else
+      @host = Host::Base.my_hosts.find_by_name id.downcase
+      @host ||= Host::Base.my_hosts.find_by_mac params[:host][:mac] if params[:host] && params[:host][:mac]
+    end
+
+    not_found and return false unless @host
   end
 
   def load_vars_for_ajax
     return unless @host
 
+    taxonomy_scope
     @environment     = @host.environment
     @architecture    = @host.architecture
     @domain          = @host.domain

@@ -29,35 +29,35 @@ module HostsHelper
     when "Pending Installation"
       style ="label-info"
       # TRANSLATORS: host's status: first character of "build"
-      short = _("B")
+      short = s_("Build|B")
     when "Alerts disabled"
       style = ""
       # TRANSLATORS: host's status: first character of "disabled"
-      short = _("D")
+      short = s_("Disabled|D")
     when "No reports"
       style = ""
       # TRANSLATORS: host's status: first character of "no reports"
-      short = _("N")
+      short = s_("No reports|N")
     when "Out of sync"
       style = "label-warning"
       # TRANSLATORS: host's status: first character of "sync" (out of sync)
-      short = _("S")
+      short = s_("Sync|S")
     when "Error"
       style = "label-important"
       # TRANSLATORS: host's status: first character of "error"
-      short = _("E")
+      short = s_("Error|E")
     when "Active"
       style = "label-info"
       # TRANSLATORS: host's status: first character of "active"
-      short = _("A")
+      short = s_("Active|A")
     when "Pending"
       style = "label-warning"
       # TRANSLATORS: host's status: first character of "pending"
-      short = _("P")
+      short = s_("Pending|P")
     else
       style = "label-success"
       # TRANSLATORS: host's status: first character of "OK"
-      short = _("O")
+      short = s_("OK|O")
     end
     content_tag(:span, short, {:rel => "twipsy", :class => "label label-light " + style, :"data-original-title" => _(label)} ) +
       link_to(trunc("  #{record}",32), host_path(record))
@@ -86,6 +86,7 @@ module HostsHelper
     ]
     actions.insert(1, [_('Build Hosts'), multiple_build_hosts_path, 'fast-forward']) if SETTINGS[:unattended]
     actions <<  [_('Run Puppet'), multiple_puppetrun_hosts_path, 'play'] if Setting[:puppetrun]
+    actions <<  [_('Deploy Single Class'), multiple_puppetrun_oneClass_deploy_hosts_path, 'play'] if Setting[:puppetrun]
     actions <<  [_('Assign Organization'), select_multiple_organization_hosts_path, 'tags'] if SETTINGS[:organizations_enabled]
     actions <<  [_('Assign Location'), select_multiple_location_hosts_path, 'map-marker'] if SETTINGS[:locations_enabled]
 
@@ -266,5 +267,19 @@ module HostsHelper
       return true if errors[c.to_sym].any?
     end
     false
+  end
+
+  def args_for_compute_resource_partial(host)
+    { :arch => host.try(:architecture_id)    || (params[:host] && params[:host][:architecture_id]),
+      :os   => host.try(:operatingsystem_id) || (params[:host] && params[:host][:operatingsystem_id])
+    }
+  end
+
+  def show_appropriate_host_buttons(host)
+    [ link_to_if_authorized(_("Audits"), hash_for_host_audits_path(:host_id => @host), :title => _("Host audit entries") , :class => 'btn'),
+      (link_to_if_authorized(_("Facts"), hash_for_host_facts_path(:host_id => host), :title => _("Browse host facts") , :class => 'btn') if host.facts_hash.present?),
+      (link_to_if_authorized(_("Reports"), hash_for_host_reports_path(:host_id => host), :title => _("Browse host reports") , :class => 'btn') if host.reports.present?),
+      (link_to(_("YAML"), externalNodes_host_path(:name => host), :title => _("Puppet external nodes YAML dump") , :class => 'btn') if SmartProxy.puppet_proxies.present?)
+    ].compact
   end
 end
